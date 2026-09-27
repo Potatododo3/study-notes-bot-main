@@ -37,6 +37,14 @@ def main():
     if not token:
         raise EnvironmentError("TELEGRAM_BOT_TOKEN env var is not set.")
 
+    allowed_users = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "")
+    try:
+        user_ids = {int(value.strip()) for value in allowed_users.split(",") if value.strip()}
+    except ValueError as exc:
+        raise EnvironmentError("TELEGRAM_ALLOWED_USER_IDS must be a comma-separated list of numeric Telegram user IDs.") from exc
+    if not user_ids:
+        raise EnvironmentError("Set TELEGRAM_ALLOWED_USER_IDS to the Telegram user IDs allowed to use this bot.")
+
     app = ApplicationBuilder().token(token).build()
 
     # Commands
@@ -54,7 +62,8 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     logger.info("🤖 Study Notes Bot is running...")
-    app.run_polling(drop_pending_updates=True)
+    # Keep queued updates so users can continue after a short restart/outage.
+    app.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":

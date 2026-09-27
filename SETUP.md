@@ -51,7 +51,12 @@ Set these in Portainer or your `.env` file:
 ```
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_STORAGE_CHANNEL=-1001234567890
+TELEGRAM_ALLOWED_USER_IDS=123456789
 ```
+
+`TELEGRAM_ALLOWED_USER_IDS` is required. Add your numeric Telegram user ID and any other people who should be able to use the bot, separated by commas. Users not on this list are denied access. You can find your ID with a Telegram user ID bot.
+
+The bot writes active upload sessions and its topic map under `data/`. In Portainer, mount a persistent host directory at `/app/data` so unfinished uploads and subject-topic mappings survive container replacement.
 
 ---
 
@@ -75,7 +80,7 @@ sh -c "pip install -q -r /app/requirements.txt && python /app/main.py"
 | `/help` | Show usage instructions |
 
 **Upload flow:**
-1. Send any PDF, JPG, or PNG to the bot
+1. Open a private chat with the bot and send any PDF, JPG, or PNG
 2. Tap **📚 Choose Subject** or **➕ New Subject**
 3. Tap **📝 Enter Title** and type your note title
 4. Tap **📤 Save Note**
@@ -88,6 +93,7 @@ sh -c "pip install -q -r /app/requirements.txt && python /app/main.py"
 | Problem | Fix |
 |---|---|
 | `TELEGRAM_BOT_TOKEN not set` | Check your env vars in Portainer |
-| `TELEGRAM_STORAGE_CHANNEL not set` | Add the channel ID env var |
+| `TELEGRAM_STORAGE_CHANNEL not set` | Add the storage forum group's ID |
+| `TELEGRAM_ALLOWED_USER_IDS not set` | Add your Telegram user ID and other approved IDs as a comma-separated list |
 | Bot can't post or create topics | Make sure storage is a topics-enabled group and the bot can post, manage topics, and pin messages |
 | File too large | Telegram has a 20MB bot file size limit |

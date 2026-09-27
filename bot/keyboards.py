@@ -25,9 +25,9 @@ def file_action_keyboard() -> InlineKeyboardMarkup:
 
 def subject_list_keyboard(subjects: list[dict]) -> InlineKeyboardMarkup:
     rows = []
-    for sub in subjects:
+    for index, sub in enumerate(subjects):
         rows.append([InlineKeyboardButton(
-            f"📁 {sub['name']}", callback_data=f"subject_select:{sub['name']}"
+            f"📁 {sub['name']}", callback_data=f"subject_select:{index}"
         )])
     rows.append([
         InlineKeyboardButton("⬅️ Back", callback_data="action_back"),
@@ -46,7 +46,7 @@ def confirm_title_keyboard() -> InlineKeyboardMarkup:
 
 def after_upload_keyboard(message_link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📨 View in Channel", url=message_link)],
+        [InlineKeyboardButton("📨 View in Subject Topic", url=message_link)],
         [InlineKeyboardButton("⬆️ Upload Another File", callback_data="cmd_upload")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="cmd_start")],
     ])

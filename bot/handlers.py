@@ -3,6 +3,8 @@ Handlers — Telegram command, message, and callback handlers.
 """
 
 import logging
+import os
+from telegram.helpers import escape_markdown
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
@@ -19,6 +21,38 @@ from session.session_manager import session_manager
 from storage.telegram_storage import telegram_storage
 
 logger = logging.getLogger(__name__)
+
+
+def _allowed_user_ids() -> set[int]:
+    raw_ids = os.environ.get("TELEGRAM_ALLOWED_USER_IDS", "")
+    try:
+        return {int(value.strip()) for value in raw_ids.split(",") if value.strip()}
+    except ValueError:
+        return set()
+
+
+async def _check_access(update: Update) -> bool:
+    user = update.effective_user
+    if not user or user.id not in _allowed_user_ids():
+        message = update.effective_message
+        if update.callback_query:
+            await update.callback_query.answer("You are not authorized to use this bot.", show_alert=True)
+        elif message:
+            await message.reply_text("You are not authorized to use this bot.")
+        return False
+    if update.effective_chat and update.effective_chat.type != "private":
+        message = update.effective_message
+        if update.callback_query:
+            await update.callback_query.answer("Please use the bot in a private chat.", show_alert=True)
+        elif message:
+            await message.reply_text("Please use the bot in a private chat.")
+        return False
+    return True
+
+
+def _md(value: str) -> str:
+    return escape_markdown(str(value), version=1)
+
 
 WELCOME_TEXT = (
     "👋 *Welcome to Study Notes Organizer!*\n\n"
@@ -44,6 +78,8 @@ HELP_TEXT = (
 # ── Commands ───────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _check_access(update):
+        return
     chat_id = update.effective_chat.id
     session_manager.reset(chat_id)
     await update.effective_message.reply_text(
@@ -54,10 +90,14 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_subjects(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _check_access(update):
+        return
     await _show_subjects_info(update, ctx)
 
 
 async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _check_access(update):
+        return
     await update.effective_message.reply_text(
         HELP_TEXT,
         parse_mode=ParseMode.MARKDOWN,
@@ -68,6 +108,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── File received ──────────────────────────────────────────────────────────
 
 async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _check_access(update):
+        return
     msg = update.message
     chat_id = msg.chat_id
 
@@ -92,32 +134,40 @@ async def handle_file(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     status = _build_status(session)
     await msg.reply_text(
-        f"📎 *File received:* `{file_name}`\n\n{status}\n\nWhat would you like to do?",
+        f"📎 *File received:* *{_md(file_name)}*\n\n{status}\n\nWhat would you like to do?",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=file_action_keyboard(),
     )
 
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _check_access(update):
+        return
     msg = update.message
     chat_id = msg.chat_id
     session = session_manager.get(chat_id)
     text = msg.text.strip()
 
     if session.step == "awaiting_subject":
+        if not text or len(text) > 128:
+            await msg.reply_text("Please enter a subject name between 1 and 128 characters.")
+            return
         session_manager.update(chat_id, subject=text, step="file_received")
         session = session_manager.get(chat_id)
         status = _build_status(session)
         await msg.reply_text(
-            f"✅ Subject set to *{text}*\n\n{status}",
+            f"✅ Subject set to *{_md(text)}*\n\n{status}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=file_action_keyboard(),
         )
 
     elif session.step == "awaiting_title":
+        if not text or len(text) > 200:
+            await msg.reply_text("Please enter a title between 1 and 200 characters.")
+            return
         session_manager.update(chat_id, title=text, step="confirming_title")
         await msg.reply_text(
-            f"📝 Title entered: *{text}*\n\nLooks good?",
+            f"📝 Title entered: *{_md(text)}*\n\nLooks good?",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=confirm_title_keyboard(),
         )
@@ -132,10 +182,13 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Callbacks ──────────────────────────────────────────────────────────────
 
 async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not await _check_access(update):
+        return
     query = update.callback_query
-    await query.answer()
     chat_id = query.message.chat_id
     data = query.data
+    if data != "action_upload":
+        await query.answer()
     session = session_manager.get(chat_id)
 
     if data == "cmd_start":
@@ -211,7 +264,7 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         session = session_manager.get(chat_id)
         status = _build_status(session)
         await query.edit_message_text(
-            f"📎 *File:* `{session.file_name}`\n\n{status}\n\nWhat would you like to do?",
+            f"📎 *File:* *{_md(session.file_name or '')}*\n\n{status}\n\nWhat would you like to do?",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=file_action_keyboard(),
         )
@@ -227,12 +280,17 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("subject_select:"):
-        subject = data.split(":", 1)[1]
+        subjects = await telegram_storage.list_subjects(ctx.bot)
+        try:
+            subject = subjects[int(data.split(":", 1)[1])]
+        except (ValueError, IndexError):
+            await query.answer("That subject list is out of date. Please choose again.", show_alert=True)
+            return
         session_manager.update(chat_id, subject=subject, step="file_received")
         session = session_manager.get(chat_id)
         status = _build_status(session)
         await query.edit_message_text(
-            f"✅ Subject set to *{subject}*\n\n{status}",
+            f"✅ Subject set to *{_md(subject)}*\n\n{status}",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=file_action_keyboard(),
         )
@@ -262,6 +320,9 @@ async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Upload logic ───────────────────────────────────────────────────────────
 
 async def _do_upload(query, chat_id: int, session, ctx: ContextTypes.DEFAULT_TYPE):
+    if session.step == "uploading":
+        await query.answer("This note is already being saved. Please wait.", show_alert=True)
+        return
     if not session.file_id:
         await query.answer("⚠️ No file found! Send a file first.", show_alert=True)
         return
@@ -272,10 +333,12 @@ async def _do_upload(query, chat_id: int, session, ctx: ContextTypes.DEFAULT_TYP
         await query.answer("⚠️ Please enter a title first!", show_alert=True)
         return
 
+    await query.answer()
     await query.edit_message_text(
         "⏳ *Saving note...*\n\nPlease wait a moment.",
         parse_mode=ParseMode.MARKDOWN,
     )
+    session_manager.update(chat_id, step="uploading")
 
     try:
         result = await telegram_storage.upload_file(
@@ -287,13 +350,11 @@ async def _do_upload(query, chat_id: int, session, ctx: ContextTypes.DEFAULT_TYP
             title=session.title,
         )
 
-        await telegram_storage.save_subject(ctx.bot, session.subject)
-
         success_text = (
             "✅ *Note saved!*\n\n"
-            f"📁 Subject: *{session.subject}*\n"
-            f"📝 Title: *{session.title}*\n"
-            f"📄 File: `{session.file_name}`"
+            f"📁 Subject: *{_md(session.subject)}*\n"
+            f"📝 Title: *{_md(session.title)}*\n"
+            f"📄 File: *{_md(session.file_name or '')}*"
         )
         await query.edit_message_text(
             success_text,
@@ -303,20 +364,21 @@ async def _do_upload(query, chat_id: int, session, ctx: ContextTypes.DEFAULT_TYP
         )
         session_manager.reset(chat_id)
 
-    except Exception as e:
+    except Exception as error:
         logger.exception("Save failed")
+        session_manager.update(chat_id, step="file_received")
         await query.edit_message_text(
-            f"❌ *Save failed.*\n\n`{str(e)}`\n\nPlease try again.",
-            parse_mode=ParseMode.MARKDOWN,
+            f"❌ Save failed. {str(error)[:350]}\n\nCheck the storage group setup and bot permissions, then try again.",
             reply_markup=file_action_keyboard(),
         )
+
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _build_status(session) -> str:
-    subject_str = f"✅ *{session.subject}*" if session.subject else "❌ Not set"
-    title_str = f"✅ *{session.title}*" if session.title else "❌ Not set"
+    subject_str = f"✅ *{_md(session.subject)}*" if session.subject else "❌ Not set"
+    title_str = f"✅ *{_md(session.title)}*" if session.title else "❌ Not set"
     return f"📁 Subject: {subject_str}\n📝 Title: {title_str}"
 
 
@@ -325,7 +387,7 @@ async def _show_subjects_info(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not subjects:
         text = "📭 *No subjects yet.*\n\nSend a file and create your first subject!"
     else:
-        lines = "\n".join(f"  📁 {s}" for s in subjects)
+        lines = "\n".join(f"  📁 {_md(s)}" for s in subjects)
         text = f"📚 *Your Subjects ({len(subjects)}):*\n\n{lines}"
     await update.effective_message.reply_text(
         text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard()
@@ -337,7 +399,7 @@ async def _show_subjects_callback(query, ctx: ContextTypes.DEFAULT_TYPE):
     if not subjects:
         text = "📭 *No subjects yet.*\n\nSend a file and create your first subject!"
     else:
-        lines = "\n".join(f"  📁 {s}" for s in subjects)
+        lines = "\n".join(f"  📁 {_md(s)}" for s in subjects)
         text = f"📚 *Your Subjects ({len(subjects)}):*\n\n{lines}"
     await query.edit_message_text(
         text, parse_mode=ParseMode.MARKDOWN, reply_markup=main_menu_keyboard()
